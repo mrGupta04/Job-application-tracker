@@ -16,30 +16,51 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+interface AuthResponse {
+  token: string;
+  user: User;
+}
+
+interface MeResponse {
+  user: User;
+}
+
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      // TODO: verify token or get user
-      // For now, assume valid
-      setUser({ id: 'temp', email: 'temp' });
-    }
-    setLoading(false);
+    const initializeAuth = async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const res = await api.get<MeResponse>('/auth/me');
+        setUser(res.data.user);
+      } catch {
+        localStorage.removeItem('token');
+        setUser(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
   }, []);
 
   const login = async (email: string, password: string) => {
-    const res = await api.post('/auth/login', { email, password });
+    const res = await api.post<AuthResponse>('/auth/login', { email, password });
     localStorage.setItem('token', res.data.token);
-    setUser({ id: 'temp', email });
+    setUser(res.data.user);
   };
 
   const register = async (email: string, password: string) => {
-    const res = await api.post('/auth/register', { email, password });
+    const res = await api.post<AuthResponse>('/auth/register', { email, password });
     localStorage.setItem('token', res.data.token);
-    setUser({ id: 'temp', email });
+    setUser(res.data.user);
   };
 
   const logout = () => {

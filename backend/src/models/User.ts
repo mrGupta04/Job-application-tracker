@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import mongoose, { HydratedDocument } from 'mongoose';
 import bcrypt from 'bcryptjs';
 
 interface IUser extends mongoose.Document {
@@ -7,15 +7,28 @@ interface IUser extends mongoose.Document {
   matchPassword(enteredPassword: string): Promise<boolean>;
 }
 
-const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
+const userSchema = new mongoose.Schema<IUser>({
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true,
+    maxlength: 254,
+  },
+  password: {
+    type: String,
+    required: true,
+    minlength: 8,
+    select: false,
+  },
 }, { timestamps: true });
 
-userSchema.pre<IUser>('save', async function(next) {
-  if (!this.isModified('password')) return next();
+userSchema.pre('save', async function save(next) {
+  const user = this as HydratedDocument<IUser>;
+  if (!user.isModified('password')) return next();
   const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
+  user.password = await bcrypt.hash(user.password, salt);
   next();
 });
 
