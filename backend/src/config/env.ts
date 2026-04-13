@@ -48,6 +48,32 @@ const required = (key: 'MONGO_URI' | 'JWT_SECRET'): string => {
   return value;
 };
 
+const parseApiKey = (value: string | undefined): string => {
+  return value?.trim() || '';
+};
+
+type AiProvider = 'openai' | 'google' | 'auto';
+const parseAiProvider = (value: string | undefined): AiProvider => {
+  if (!value) {
+    return 'auto';
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'openai' || normalized === 'google' || normalized === 'auto') {
+    return normalized as AiProvider;
+  }
+
+  throw new Error('AI_PROVIDER must be one of openai, google, or auto');
+};
+
+const parseBaseUrl = (value: string | undefined, defaultValue: string): string => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return defaultValue;
+  }
+  return trimmed.replace(/\/+$/, '');
+};
+
 const NODE_ENV = parseNodeEnv(process.env.NODE_ENV);
 const PORT = parsePort(process.env.PORT);
 const MONGO_URI = required('MONGO_URI');
@@ -64,9 +90,16 @@ export const env = {
   JWT_SECRET,
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN?.trim() || '30d',
   CORS_ORIGINS: parseOrigins(process.env.CORS_ORIGINS),
-  OPENAI_API_KEY: process.env.OPENAI_API_KEY?.trim() || '',
-  OPENAI_MODEL: process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini',
+  OPENAI_API_KEY: parseApiKey(process.env.OPENAI_API_KEY),
+  GEMINI_API_KEY: parseApiKey(process.env.GEMINI_API_KEY),
+  AI_API_KEY: parseApiKey(process.env.AI_API_KEY),
+  OPENAI_MODEL: parseApiKey(process.env.OPENAI_MODEL) || 'gpt-4o-mini',
+  GEMINI_MODEL: parseApiKey(process.env.GEMINI_MODEL),
+  AI_MODEL: parseApiKey(process.env.AI_MODEL),
+  AI_PROVIDER: parseAiProvider(process.env.AI_PROVIDER),
+  OPENAI_API_BASE_URL: parseBaseUrl(process.env.OPENAI_API_BASE_URL, 'https://api.openai.com/v1'),
+  GEMINI_API_BASE_URL: parseBaseUrl(process.env.GEMINI_API_BASE_URL, 'https://generativelanguage.googleapis.com/v1beta'),
+  AI_API_BASE_URL: parseApiKey(process.env.AI_API_BASE_URL),
   RATE_LIMIT_WINDOW_MS: Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
   RATE_LIMIT_MAX_REQUESTS: Number(process.env.RATE_LIMIT_MAX_REQUESTS || 300),
 } as const;
-

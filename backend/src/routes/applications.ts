@@ -50,7 +50,7 @@ const mapAIError = (
     if (error.status === 401 || error.status === 403) {
       return {
         status: 502,
-        message: 'AI service authentication failed. Verify OPENAI_API_KEY and OPENAI_MODEL.',
+        message: 'AI service authentication failed. Verify OPENAI_API_KEY/GEMINI_API_KEY and OPENAI_MODEL.',
       };
     }
 
@@ -64,6 +64,48 @@ const mapAIError = (
     return {
       status: 502,
       message: `AI service error (${error.status}). Please try again shortly.`,
+    };
+  }
+
+  if (error instanceof Error && error.message.startsWith('Gemini API error:')) {
+    if (/503|UNAVAILABLE|high demand|temporarily unavailable|try again later/i.test(error.message)) {
+      return {
+        status: 503,
+        message: 'Gemini is temporarily overloaded. The backend retried automatically, but the service is still unavailable. Please try again in a few seconds.',
+      };
+    }
+
+    if (/404|NOT_FOUND|is not found for API version|not supported for generateContent/i.test(error.message)) {
+      return {
+        status: 502,
+        message: 'Gemini model is invalid or unavailable. Set GEMINI_MODEL to a supported model like gemini-2.5-flash-lite or gemini-2.5-flash.',
+      };
+    }
+
+    if (/401|403|API key not valid|API_KEY_INVALID|PERMISSION_DENIED|UNAUTHENTICATED/i.test(error.message)) {
+      return {
+        status: 502,
+        message: 'AI service authentication failed. Verify GEMINI_API_KEY and GEMINI_MODEL.',
+      };
+    }
+
+    if (/429|RESOURCE_EXHAUSTED|rate limit/i.test(error.message)) {
+      return {
+        status: 429,
+        message: 'AI service rate limit reached. Please retry in a moment.',
+      };
+    }
+
+    return {
+      status: 502,
+      message: 'Gemini API returned an error. Please verify the model and try again.',
+    };
+  }
+
+  if (error instanceof Error && /Gemini blocked the response/i.test(error.message)) {
+    return {
+      status: 422,
+      message: 'Gemini refused to process this job description. Please shorten or simplify it and retry.',
     };
   }
 
@@ -261,8 +303,29 @@ const validateSuggestionsPayload = (
 
 const router = express.Router();
 
-// All routes protected
+// All application routes require auth
 router.use(protect);
+
+// Parse JD
+router.post('/parse-jd', async (req, res) => {
+  const jobDescriptionValidation = sanitizeString(req.body?.jobDescription, 'jobDescription', {
+    required: true,
+    max: 25000,
+  });
+
+  if (jobDescriptionValidation.error || !jobDescriptionValidation.value) {
+    return res.status(400).json({ message: jobDescriptionValidation.error || 'Invalid job description' });
+  }
+
+  try {
+    const parsed = await parseJobDescription(jobDescriptionValidation.value);
+    return res.json(parsed);
+  } catch (error) {
+    const mapped = mapAIError(error, 'Error parsing job description');
+    console.error('parse-jd failed:', error);
+    return res.status(mapped.status).json({ message: mapped.message });
+  }
+});
 
 // Get all applications
 router.get('/', async (req: AuthRequest, res) => {
@@ -327,27 +390,6 @@ router.delete('/:id', async (req: AuthRequest, res) => {
     return res.json({ message: 'Application removed' });
   } catch (error) {
     return res.status(500).json({ message: 'Server error' });
-  }
-});
-
-// Parse JD
-router.post('/parse-jd', async (req, res) => {
-  const jobDescriptionValidation = sanitizeString(req.body?.jobDescription, 'jobDescription', {
-    required: true,
-    max: 25000,
-  });
-
-  if (jobDescriptionValidation.error || !jobDescriptionValidation.value) {
-    return res.status(400).json({ message: jobDescriptionValidation.error || 'Invalid job description' });
-  }
-
-  try {
-    const parsed = await parseJobDescription(jobDescriptionValidation.value);
-    return res.json(parsed);
-  } catch (error) {
-    const mapped = mapAIError(error, 'Error parsing job description');
-    console.error('parse-jd failed:', error);
-    return res.status(mapped.status).json({ message: mapped.message });
   }
 });
 

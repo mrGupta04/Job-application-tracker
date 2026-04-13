@@ -10,9 +10,13 @@ export interface ResumeSuggestionInput {
   location: string;
 }
 
-const openai = env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: env.OPENAI_API_KEY })
+const openai = env.OPENAI_API_KEY || env.AI_API_KEY
+  ? new OpenAI({ apiKey: env.OPENAI_API_KEY || env.AI_API_KEY, baseURL: env.OPENAI_API_BASE_URL })
   : null;
+
+const useGoogleGemini =
+  env.AI_PROVIDER === 'google' ||
+  (!!env.GEMINI_API_KEY && !env.OPENAI_API_KEY && !env.AI_API_KEY);
 
 const requireOpenAI = () => {
   if (!openai) {
@@ -20,6 +24,180 @@ const requireOpenAI = () => {
   }
 
   return openai;
+};
+
+const getOpenAIModel = () => env.OPENAI_MODEL || env.AI_MODEL || 'gpt-4o-mini';
+const normalizeGoogleModel = (model: string) => model.replace(/^models\//, '').trim();
+const DEFAULT_GOOGLE_MODEL = 'gemini-2.5-flash-lite';
+const GOOGLE_FALLBACK_MODELS = ['gemini-2.5-flash'];
+const MAX_GEMINI_RETRIES = 2;
+const RETRYABLE_GEMINI_ERROR_PATTERN = /503|UNAVAILABLE|high demand|temporarily unavailable|try again later/i;
+
+const getGoogleModels = () => {
+  const preferredModel = normalizeGoogleModel(env.GEMINI_MODEL || env.AI_MODEL || DEFAULT_GOOGLE_MODEL);
+
+  return [preferredModel, DEFAULT_GOOGLE_MODEL, ...GOOGLE_FALLBACK_MODELS]
+    .map((model) => normalizeGoogleModel(model))
+    .filter(Boolean)
+    .filter((model, index, models) => models.indexOf(model) === index);
+};
+
+const getGoogleBaseUrl = () => {
+  const baseUrl = env.GEMINI_API_BASE_URL || env.AI_API_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
+  return baseUrl.replace(/\/+$/, '').replace(/\/models$/, '');
+};
+
+const getGoogleApiKey = () => {
+  const apiKey = env.GEMINI_API_KEY || env.AI_API_KEY;
+  if (!apiKey) {
+    throw new Error('OPENAI_NOT_CONFIGURED');
+  }
+  return apiKey;
+};
+
+type ResponseFormat = 'json' | 'text';
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const buildGoogleRequestUrl = (model: string, apiKey: string) =>
+  `${getGoogleBaseUrl()}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+const redactApiKey = (value: string) => value.replace(/([?&]key=)[^&]+/i, '$1[REDACTED]');
+
+const isRetryableGeminiError = (error: unknown) =>
+  error instanceof Error && RETRYABLE_GEMINI_ERROR_PATTERN.test(error.message);
+
+const requestGoogleGeminiTextOnce = async (
+  prompt: string,
+  temperature: number,
+  model: string,
+  responseFormat: ResponseFormat = 'text',
+) => {
+  const apiKey = getGoogleApiKey();
+  const url = buildGoogleRequestUrl(model, apiKey);
+  const safeUrl = redactApiKey(url);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }],
+        },
+      ],
+      generationConfig: {
+        temperature,
+        maxOutputTokens: 1024,
+        ...(responseFormat === 'json' ? { responseMimeType: 'application/json' } : {}),
+      },
+    }),
+  });
+
+  const text = await response.text();
+  if (!text) {
+    throw new Error(`Gemini API error: empty response body (${response.status} ${response.statusText}) from ${safeUrl}`);
+  }
+
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Failed to parse Gemini response from ${safeUrl}: ${error instanceof Error ? error.message : 'unknown error'}; body=${text}`);
+  }
+
+  if (!response.ok) {
+    const message = (json as any)?.error?.message || response.statusText;
+    throw new Error(`Gemini API error: ${message}; status=${response.status}; model=${model}; url=${safeUrl}; body=${text}`);
+  }
+
+  const payload = json as Record<string, any>;
+  const blockedReason = payload?.promptFeedback?.blockReason;
+  if (blockedReason) {
+    throw new Error(`Gemini blocked the response: ${blockedReason}; model=${model}; url=${safeUrl}; body=${text}`);
+  }
+
+  const contentParts = Array.isArray(payload?.candidates?.[0]?.content?.parts)
+    ? payload.candidates[0].content.parts
+    : [];
+
+  const content = contentParts
+    .map((part: { text?: unknown }) => (typeof part?.text === 'string' ? part.text : ''))
+    .join('\n')
+    .trim();
+
+  if (!content) {
+    throw new Error(`No valid text output from Gemini API; model=${model}; url=${safeUrl}; response=${text}`);
+  }
+
+  return content;
+};
+
+const requestGoogleGeminiText = async (
+  prompt: string,
+  temperature: number,
+  responseFormat: ResponseFormat = 'text',
+) => {
+  const models = getGoogleModels();
+  let lastError: unknown = null;
+
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+    const model = models[modelIndex];
+
+    for (let attempt = 1; attempt <= MAX_GEMINI_RETRIES; attempt += 1) {
+      try {
+        return await requestGoogleGeminiTextOnce(prompt, temperature, model, responseFormat);
+      } catch (error) {
+        lastError = error;
+
+        if (!isRetryableGeminiError(error)) {
+          throw error;
+        }
+
+        const hasMoreAttemptsForModel = attempt < MAX_GEMINI_RETRIES;
+        const hasMoreModels = modelIndex < models.length - 1;
+
+        if (!hasMoreAttemptsForModel && !hasMoreModels) {
+          break;
+        }
+
+        await wait(350 * attempt);
+      }
+    }
+  }
+
+  if (lastError instanceof Error) {
+    const lastMessage = lastError.message.replace(/^Gemini API error:\s*/i, '');
+    throw new Error(`Gemini API error: all configured Gemini models are temporarily unavailable after retries. Last error: ${lastMessage}`);
+  }
+
+  throw new Error('Gemini API error: all configured Gemini models are temporarily unavailable after retries.');
+};
+
+const getAiText = async (
+  prompt: string,
+  temperature: number,
+  responseFormat: ResponseFormat = 'text',
+) => {
+  if (useGoogleGemini) {
+    return requestGoogleGeminiText(prompt, temperature, responseFormat);
+  }
+
+  const client = requireOpenAI();
+  const response = await client.chat.completions.create({
+    model: getOpenAIModel(),
+    messages: [{ role: 'user', content: prompt }],
+    temperature,
+    ...(responseFormat === 'json' ? { response_format: { type: 'json_object' as const } } : {}),
+  });
+
+  const content = response.choices[0].message.content;
+  if (!content) throw new Error('No response from OpenAI');
+
+  return content;
 };
 
 const parseJson = (content: string) => {
@@ -88,18 +266,14 @@ Job Description:
 ${jobDescription}
 `;
 
-  const client = requireOpenAI();
-  const response = await client.chat.completions.create({
-    model: env.OPENAI_MODEL,
-    messages: [{ role: 'user', content: prompt }],
-    response_format: { type: 'json_object' },
-    temperature: 0.2,
-  });
+  const content = await getAiText(prompt, 0.2, 'json');
 
-  const content = response.choices[0].message.content;
-  if (!content) throw new Error('No response from OpenAI');
-
-  const parsed = parseJson(content) as Record<string, unknown>;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseJson(content) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(`AI returned invalid JSON for job parsing: ${error instanceof Error ? error.message : 'unknown error'}; content=${content}`);
+  }
 
   return {
     company: asString(parsed.company),
@@ -115,18 +289,15 @@ export const generateResumeSuggestions = async (data: ResumeSuggestionInput) => 
   const prompt = `Generate 3-5 tailored resume bullet points.${buildSuggestionContext(data)}
 Return JSON only in this format: {"suggestions":["..."]}`;
 
-  const client = requireOpenAI();
-  const response = await client.chat.completions.create({
-    model: env.OPENAI_MODEL,
-    messages: [{ role: 'user', content: prompt }],
-    response_format: { type: 'json_object' },
-    temperature: 0.4,
-  });
+  const content = await getAiText(prompt, 0.4, 'json');
 
-  const content = response.choices[0].message.content;
-  if (!content) throw new Error('No response from OpenAI');
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseJson(content) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(`AI returned invalid JSON for resume suggestions: ${error instanceof Error ? error.message : 'unknown error'}; content=${content}`);
+  }
 
-  const parsed = parseJson(content) as Record<string, unknown>;
   const suggestions = asStringArray(parsed.suggestions);
 
   if (suggestions.length === 0) {
@@ -147,9 +318,16 @@ Rules:
 - Start each line with "- ".
 - Keep each bullet concise and impact-focused.`;
 
+  if (useGoogleGemini) {
+    const suggestions = await generateResumeSuggestions(data);
+    const text = suggestions.join('\n');
+    onChunk(text);
+    return suggestions;
+  }
+
   const client = requireOpenAI();
   const stream = await client.chat.completions.create({
-    model: env.OPENAI_MODEL,
+    model: getOpenAIModel(),
     messages: [{ role: 'user', content: prompt }],
     temperature: 0.4,
     stream: true,

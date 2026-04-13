@@ -15,7 +15,7 @@ MERN application for tracking job applications with AI-assisted parsing and resu
 - Frontend: React + TypeScript + Vite + Tailwind
 - Backend: Node.js + Express + TypeScript + Mongoose
 - Database: MongoDB
-- AI: OpenAI API
+- AI: Google Gemini API for structured parsing and resume suggestions
 
 ## Local Development
 
@@ -47,8 +47,11 @@ MERN application for tracking job applications with AI-assisted parsing and resu
 - `JWT_SECRET` (required, minimum 32 chars)
 - `JWT_EXPIRES_IN` (default `30d`)
 - `CORS_ORIGINS` (comma-separated allowlist, for example `https://app.example.com`)
-- `OPENAI_API_KEY` (required for AI endpoints)
-- `OPENAI_MODEL` (default `gpt-4o-mini`)
+- `AI_PROVIDER` (`google` for the Gemini-based setup in this project)
+- `GEMINI_API_KEY` (required for AI endpoints)
+- `GEMINI_MODEL` (recommended `gemini-2.5-flash-lite`; fallback logic also tries `gemini-2.5-flash`)
+- `GEMINI_API_BASE_URL` (optional; defaults to `https://generativelanguage.googleapis.com/v1beta`)
+- `OPENAI_API_KEY`, `AI_API_KEY`, `OPENAI_MODEL`, and related base URL variables remain optional if you want to swap providers later
 - `RATE_LIMIT_WINDOW_MS` (default `900000`)
 - `RATE_LIMIT_MAX_REQUESTS` (default `300`)
 
@@ -66,4 +69,4 @@ MERN application for tracking job applications with AI-assisted parsing and resu
 3. Build backend and frontend artifacts in CI/CD.
 4. Serve frontend static `dist/` files from your hosting platform.
 5. Run backend with `NODE_ENV=production` and monitor `/health`.
-6. Verify login, application CRUD, and AI endpoints in production environment.
+6. Verify login, Kanban CRUD, and authenticated Gemini AI endpoints in production.

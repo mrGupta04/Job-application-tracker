@@ -17,6 +17,10 @@ interface AddApplicationForm {
   jdLink: string;
   notes: string;
   salaryRange: string;
+  seniority: string;
+  location: string;
+  requiredSkills: string;
+  niceToHaveSkills: string;
   dateApplied: string;
   followUpDate: string;
   status: ApplicationStatus;
@@ -38,6 +42,14 @@ const parseSuggestionLines = (text: string) =>
     .filter(Boolean)
     .slice(0, 5);
 
+const skillsToText = (skills: string[]) => skills.join(', ');
+
+const parseSkills = (value: string) =>
+  value
+    .split(',')
+    .map((skill) => skill.trim())
+    .filter(Boolean);
+
 const AddApplication = ({ onClose }: { onClose: () => void }) => {
   const [form, setForm] = useState<AddApplicationForm>({
     company: '',
@@ -45,6 +57,10 @@ const AddApplication = ({ onClose }: { onClose: () => void }) => {
     jdLink: '',
     notes: '',
     salaryRange: '',
+    seniority: '',
+    location: '',
+    requiredSkills: '',
+    niceToHaveSkills: '',
     dateApplied: toLocalDateInputValue(new Date().toISOString()),
     followUpDate: '',
     status: 'Applied',
@@ -70,6 +86,15 @@ const AddApplication = ({ onClose }: { onClose: () => void }) => {
 
     return fallback;
   };
+
+  const getSuggestionPayload = () => ({
+    company: form.company.trim(),
+    role: form.role.trim(),
+    requiredSkills: parseSkills(form.requiredSkills),
+    niceToHaveSkills: parseSkills(form.niceToHaveSkills),
+    seniority: form.seniority.trim(),
+    location: form.location.trim(),
+  });
 
   const parseServerEventBlock = (block: string) => {
     const lines = block.split('\n');
@@ -173,10 +198,16 @@ const AddApplication = ({ onClose }: { onClose: () => void }) => {
     try {
       const res = await parseJD.mutateAsync(form.jobDescription);
       setParsed(res);
+      setSuggestions([]);
+      setStreamingText('');
       setForm((prev) => ({
         ...prev,
         company: res.company || prev.company,
         role: res.role || prev.role,
+        seniority: res.seniority || prev.seniority,
+        location: res.location || prev.location,
+        requiredSkills: res.requiredSkills.length > 0 ? skillsToText(res.requiredSkills) : prev.requiredSkills,
+        niceToHaveSkills: res.niceToHaveSkills.length > 0 ? skillsToText(res.niceToHaveSkills) : prev.niceToHaveSkills,
       }));
     } catch (error) {
       setError(getErrorMessage(error, 'Unable to parse job description right now.'));
@@ -190,14 +221,13 @@ const AddApplication = ({ onClose }: { onClose: () => void }) => {
     setStreamingText('');
     setIsStreamingSuggestions(true);
 
-    const payload = {
-      company: parsed.company || form.company,
-      role: parsed.role || form.role,
-      requiredSkills: parsed.requiredSkills || [],
-      niceToHaveSkills: parsed.niceToHaveSkills || [],
-      seniority: parsed.seniority || '',
-      location: parsed.location || '',
-    };
+    const payload = getSuggestionPayload();
+
+    if (!payload.company || !payload.role) {
+      setIsStreamingSuggestions(false);
+      setError('Company and role are required to generate suggestions.');
+      return;
+    }
 
     try {
       const streamResult = await streamSuggestions(payload);
@@ -235,10 +265,10 @@ const AddApplication = ({ onClose }: { onClose: () => void }) => {
         dateApplied: form.dateApplied ? new Date(form.dateApplied).toISOString() : undefined,
         followUpDate: form.followUpDate ? new Date(form.followUpDate).toISOString() : undefined,
         status: form.status,
-        requiredSkills: parsed?.requiredSkills || [],
-        niceToHaveSkills: parsed?.niceToHaveSkills || [],
-        seniority: parsed?.seniority || undefined,
-        location: parsed?.location || undefined,
+        requiredSkills: parseSkills(form.requiredSkills),
+        niceToHaveSkills: parseSkills(form.niceToHaveSkills),
+        seniority: form.seniority || undefined,
+        location: form.location || undefined,
       });
       onClose();
     } catch (error) {
@@ -273,13 +303,14 @@ const AddApplication = ({ onClose }: { onClose: () => void }) => {
             {parseJD.isLoading ? 'Parsing...' : 'Parse JD'}
           </button>
           {parsed && (
-            <div className="mb-4">
-              <p className="dark:text-slate-100">Company: {parsed.company}</p>
-              <p className="dark:text-slate-100">Role: {parsed.role}</p>
+            <div className="mb-4 rounded border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/50 dark:bg-emerald-950/30">
+              <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
+                Gemini parsed the job description and filled the form below.
+              </p>
               <button
                 type="button"
                 onClick={handleGenerate}
-                className="rounded bg-purple-500 px-4 py-2 text-white"
+                className="mt-3 rounded bg-purple-500 px-4 py-2 text-white"
                 disabled={generateSuggestions.isLoading || isStreamingSuggestions}
               >
                 {isStreamingSuggestions || generateSuggestions.isLoading ? 'Generating...' : 'Generate Suggestions'}
@@ -347,6 +378,36 @@ const AddApplication = ({ onClose }: { onClose: () => void }) => {
             value={form.salaryRange}
             onChange={(e) => setForm({ ...form, salaryRange: e.target.value })}
             className="mb-4 w-full border p-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          />
+          <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <input
+              type="text"
+              placeholder="Seniority"
+              value={form.seniority}
+              onChange={(e) => setForm({ ...form, seniority: e.target.value })}
+              className="w-full rounded border p-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            />
+            <input
+              type="text"
+              placeholder="Location"
+              value={form.location}
+              onChange={(e) => setForm({ ...form, location: e.target.value })}
+              className="w-full rounded border p-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            />
+          </div>
+          <textarea
+            placeholder="Required skills (comma separated)"
+            value={form.requiredSkills}
+            onChange={(e) => setForm({ ...form, requiredSkills: e.target.value })}
+            className="mb-4 w-full rounded border p-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            rows={2}
+          />
+          <textarea
+            placeholder="Nice-to-have skills (comma separated)"
+            value={form.niceToHaveSkills}
+            onChange={(e) => setForm({ ...form, niceToHaveSkills: e.target.value })}
+            className="mb-4 w-full rounded border p-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            rows={2}
           />
           <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">
             <input
